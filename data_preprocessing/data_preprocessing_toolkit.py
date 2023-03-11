@@ -7,6 +7,7 @@ from data_preprocessing.dataset_specification import DatasetSpecification
 import pandas as pd
 import numpy as np
 # ------------------------------------------------------------
+from functools import reduce
 
 
 class DataPreprocessingToolkit(object):
@@ -43,6 +44,9 @@ class DataPreprocessingToolkit(object):
         ########################
         # Write your code here #
         ########################
+        index_of_companies_clients = df.loc[df['is_company'] == 1].index
+        
+        return df.drop(index_of_companies_clients)
 
     @staticmethod
     def filter_out_long_stays(df):
@@ -56,6 +60,9 @@ class DataPreprocessingToolkit(object):
         ########################
         # Write your code here #
         ########################
+        index_of_long_stays_clients = df.loc[df['length_of_stay'] > 21].index
+        
+        return df.drop(index_of_long_stays_clients)
 
     @staticmethod
     def filter_out_low_prices(df):
@@ -70,6 +77,9 @@ class DataPreprocessingToolkit(object):
         ########################
         # Write your code here #
         ########################
+        index_of_low_prices = df.loc[df['accommodation_price'] <= 50].index
+        
+        return df.drop(index_of_low_prices)
 
     @staticmethod
     def fix_date_to(df):
@@ -95,6 +105,13 @@ class DataPreprocessingToolkit(object):
         ########################
         # Write your code here #
         ########################
+        # date_to - originally it points to the last full day of stay, not the departure date - fixed
+        # do we should add + 1 to property count spedn night??
+        # date_ is datetime type - no need to mapping using: datetime.strptime(d1, "%Y-%m-%d")
+        df.insert(6, 'length_of_stay', 0)
+        df['length_of_stay'] = df[['date_to', 'date_from']].apply(lambda x: abs((x[0] - x[1]).days) , axis=1)
+
+        return df
 
     @staticmethod
     def add_book_to_arrival(df):
@@ -108,6 +125,10 @@ class DataPreprocessingToolkit(object):
         ########################
         # Write your code here #
         ########################
+        df.insert(8, 'book_to_arrival', 0)
+        df['book_to_arrival'] = df[['date_from', 'booking_date']].apply(lambda x: abs((x[0] - x[1]).days) , axis=1)
+
+        return df
 
     @staticmethod
     def add_nrooms(df):
@@ -134,7 +155,16 @@ class DataPreprocessingToolkit(object):
         ########################
         # Write your code here #
         ########################
+        #         lambda x: (end := x[0].dayofweek, \
+#                    start := x[1].dayofweek, \
+#                    dt := (x[0] - x[1]).days, \
+#                    ( ((start >= 4) & (start != 6)) | ( end>=5) | ((end < start) & (start != 6)) | (dt >= 6))
+#                   )
+        df.insert(6, 'weekend_stay', 'False')
+        df['weekend_stay'] = df[['date_to', 'date_from']].apply(lambda x: str(( ((x[1].dayofweek >= 4) & (x[1].dayofweek != 6)) | ( x[0].dayofweek >=5) | ((x[0].dayofweek < x[1].dayofweek) & (x[1].dayofweek != 6)) | ((x[0] - x[1]).days >= 6))), axis=1)
 
+        return df
+        
     @staticmethod
     def add_night_price(df):
         """
@@ -148,6 +178,19 @@ class DataPreprocessingToolkit(object):
         ########################
         # Write your code here #
         ########################
+        accommodation_price = np.array(df.loc[:, ['accommodation_price']])
+        length_of_stay = np.array(df.loc[:, ['length_of_stay']])   # in negative case: may be an array no ta single value becouse of 'mode' in 'aggregate_group_reservations' function may return list of values not only single value
+        n_rooms = np.array(df.loc[:, ['n_rooms']])
+        
+        # claculated for agregated data
+        night_price = np.divide(np.divide(accommodation_price, length_of_stay), n_rooms)
+        night_price = np.around(night_price, 2)  # round data for assert test
+        #decs=2
+        #night_price = np.trunc(night_price*10**decs)/(10**decs)
+        df.insert(19, 'night_price', night_price)
+
+        return df
+
 
     @staticmethod
     def clip_book_to_arrival(df):
@@ -173,6 +216,12 @@ class DataPreprocessingToolkit(object):
         ########################
         # Write your code here #
         ########################
+        peoples = np.array(df.loc[:, ['n_people', 'n_children_1', 'n_children_2', 'n_children_3']])
+        n_people = np.sum(peoples, axis=1)  # sum by rows values
+
+        df['n_people'] = n_people  # apply value of existing column
+
+        return df
 
     @staticmethod
     def leave_one_from_group_reservations(df):
@@ -223,6 +272,44 @@ class DataPreprocessingToolkit(object):
         ########################
         # Write your code here #
         ########################
+        group_sum_columns = group_reservations.loc[:, np.concatenate((['group_id'], self.sum_columns))].groupby('group_id', as_index=False)[self.sum_columns].sum()
+
+        # '.agg' raw example
+        # {"accommodation_price": lambda x: list(x)}
+        
+        # solution
+        # agg({str(column): lambda x: list(x) for column in self.sum_columns})
+        
+        # DEBUG 
+        #display(group_reservations.groupby('group_id', as_index=False).agg({str(column): lambda x: list(x) for column in self.sum_columns}).head(8))
+        
+        group_mean_columns = group_reservations.loc[:, np.concatenate((['group_id'], self.mean_columns))].groupby('group_id', as_index=False)[self.mean_columns].mean()
+                
+        # DEBUG
+        #display(group_reservations.loc[:, np.concatenate((['group_id'], self.mode_columns))].groupby('group_id', as_index=False).agg({str(column): lambda x: x.value_counts().index[0] for column in self.mode_columns}).head(20))
+        
+        # do it
+        # way I: {str(column): lambda x: x.value_counts(normalize=True) for column in self.mode_columns}
+        #        x.value_counts().index - for values
+        # way II: pd.Series.mode || lambda x: x.mode()[0]
+        # .agg(lambda x: x.value_counts())
+        
+        # todo: what if there are many rows with the same frequency eg: [a, b, c] 
+        group_mode_columns = group_reservations.loc[:, np.concatenate((['group_id'], self.mode_columns))].groupby('group_id', as_index=False).agg(lambda x: x.value_counts().index[0])
+        
+        group_first_columns = group_reservations.loc[:, np.concatenate((['group_id'], self.first_columns))].groupby('group_id', as_index=False)[self.first_columns].first()
+        
+        #aggregated_group_reservations = pd.DataFrame({'group_sum_columns': group_sum_columns.values.tolist(), 'group_mean_columns': group_mean_columns.values.tolist(), 'group_first_columns': group_first_columns.values.tolist()})
+        
+        merged_data = reduce(lambda left, right:     # Merge DataFrames in list
+                     pd.merge(left , right,
+                              on = ["group_id"]
+                             ),
+                     [group_sum_columns, group_mean_columns, group_mode_columns, group_first_columns])
+
+        merged_data.drop('group_id', inplace=True, axis=1)
+        
+        return pd.concat([non_group_reservations, merged_data])
 
     @staticmethod
     def leave_only_ota(df):
@@ -264,7 +351,18 @@ class DataPreprocessingToolkit(object):
         """
         ########################
         # Write your code here #
-        ########################
+        ######################## 
+        ### DEBUG
+        # display(df.groupby('room_group_id', as_index=False).agg({str(column): lambda x: list(x) for column in ['night_price']}).head(8))
+        
+        # index, room_group_id, night_price 
+        mean_night_price = df.groupby('room_group_id', as_index=False)['night_price'].agg(lambda night_price: np.round(np.mean(night_price), 2))
+
+        # axis = 1 - so that 'x' variable gets rows of value 
+        df['room_segment'] = df.apply(lambda x: self.map_value_to_bucket(mean_night_price.loc[mean_night_price['room_group_id'] == x['room_group_id']]['night_price'].values[0], self.room_segment_buckets), axis=1)
+
+        return df
+
 
     def map_npeople_to_npeople_buckets(self, df):
         """
